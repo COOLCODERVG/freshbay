@@ -3,21 +3,27 @@ import { AppSidebar } from "../components/sidebar";
 import { supabase } from "../supabase";
 import { useNavigate } from "react-router-dom";
 import { TimeAway } from "../lib/utils"
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Toaster } from "@/components/ui/sonner"
-import { toast } from "sonner"
-
-
-import mapboxgl from 'mapbox-gl'
-
-import 'mapbox-gl/dist/mapbox-gl.css';
-
-import axios from "axios";
+import  DonationForm  from '@/components/DonationForm';
 import { 
- ShoppingCart, Package, MapPinned, AlertTriangle, ArrowUpRight, ArrowDownRight
+  Plus, ShoppingCart, Package, 
+   ChartBar, AlertTriangle,
+  ChartLine, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
+import {
+  Area,
+  AreaChart,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+  Tooltip,
+  PieChart,
+  Pie,
+  Cell,
+
+} from 'recharts';
 
 
 interface Donation {
@@ -43,54 +49,41 @@ interface User {
   };
 }
 
-export default function Location() {
+export default function FoodBankInventory() {
   const [user, setUser] = useState<User>();
-  
   const navigate = useNavigate();
   const [showForm, setShowForm] = useState(false);
   const [donations, setDonations] = useState<Donation[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
-  const INITIAL_CENTER: [number, number] = [
-    -74.0242,
-    40.6941
-  ]
-  const center = INITIAL_CENTER;
   const itemsPerPage = 10;
 
-  
 
 
-  const orderItems = async(id:any) => {
-    const { error } = await supabase
-  .from('donation')
-  .update({ food_bank_id: user?.id, status: "in-transit" })
-  .eq('id', id)
-    if(error){
-      alert("Error ordering item, Try again!");
-      console.log(error);
-    }else{
-      toast.success("Order is in Transit.", {
-        description: "Check your Dashboard or Pending to see."});
-        getData();
+  const orderTypes = donations.reduce((acc:any, donation:Donation) => {
+    const type = donation.food_type;
+    if (!acc[type]) {
+      acc[type] = { name: type, value: 0 };
     }
-  }
+    acc[type].value += donation.weight;
+    return acc;
+  }, {});
 
+  const COLORS = ['#22c55e', '#84cc16','#FFFF00', '#14b8a6', '#06b6d4'];
 
-
-  const getData = async () => {
+  const getData = async (userDat:User) => {
     const { data, error } = await supabase
       .from("donation")
       .select()
-      .not("status", "eq", "delivered")
-    .not("status", "eq", "in-transit"); 
+      .eq("food_bank_id",userDat.id)
+      .eq("status","delivered");
+
     if (error) {
       console.error("Error fetching donations:", error);
     } else {
-      console.log(data)
       setDonations(data); // Update state with fetched data
     }
   };
-
+  const orderTypesArray = Object.values(orderTypes);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -98,7 +91,8 @@ export default function Location() {
       if (data.user) {
         setUser(data.user);
         console.log(data);
-        getData();
+
+        getData(data.user);
       } else {
         navigate("/");
       }
@@ -107,20 +101,28 @@ export default function Location() {
     fetchUser();
     
   }, [supabase.auth]);
-  
 
 
 
   // Calculate metrics
   const totalFood = donations.reduce((acc, donation) => acc + donation.weight, 0);
- 
+  const pendingDeliveries = donations.filter(donation => donation.status === 'available').length;
   const totalOrders = donations.length;
   const inRiskOfExpiring = donations.filter(donation => {
     const { status } = TimeAway(donation.expiry_date, 'Expired');
-    return status === 'warning';
+    return status === 'expired' || status === 'warning';
   }).reduce((acc, donation) => acc + donation.weight, 0);
-
-
+  const expired = donations.filter(donation => {
+    const { status } = TimeAway(donation.expiry_date, 'Expired');
+    return status === 'expired' ;
+  }).reduce((acc, donation) => acc + donation.weight, 0);
+  const monthlyData = [
+    { name: 'Sept', oz: 65 },
+    { name: 'Oct', oz: 85 },
+    { name: 'Nov', oz: 73 },
+    { name: 'Dec', oz: 95 },
+    { name: 'Jan', oz: 120 },
+    { name: 'Feb', oz: totalFood-expired }];
   // Calculate pagination
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -157,66 +159,38 @@ export default function Location() {
       setCurrentPage(currentPage - 1);
     }
   };
+  
 
-  const getLatLong = async (address:string, donation:Donation) => {
-    try {
-      const response = await axios.get(`https://geocode.maps.co/search?q=${address.split(" ").join("+")}&api_key=67b127218c68c066231087yjl011f86`);
-      const lat = response.data[0].lat;
-      const lon = response.data[0].lon;
-      setShowForm(true);
-      const el = document.createElement('div');
-      el.className = 'marker';
-  
-      // Check if mapRef is initialized
-      if (mapRef.current) {
-        new mapboxgl.Marker(el)
-          .setLngLat([lon, lat])
-          .setPopup(
-            new mapboxgl.Popup({ offset: 25 })
-              .setHTML(
-                `<h3>${donation.restaurant_title}</h3><p>${donation.name} - ${donation.weight}</p><p>${donation.location} </p>`
-              )
-          )
-          .addTo(mapRef.current);
-  
-        
-      }
-      if (mapRef.current instanceof mapboxgl.Map) {
-        if (mapRef.current) {
-          mapRef.current.flyTo({ center: [lon, lat] });
-        }
-      }
-    } catch (error) {
-      console.log("Error fetching coordinates:", error);
+  const handleNewDonation = async (donation:Donation) => {
+    if (!user) {
+      alert("You must be logged in to make a donation");
+      return;
+    }
+
+    // Insert the donation with user_id
+    const { error } = await supabase
+      .from("donation")
+      .insert({
+        name: donation.items,
+        weight: donation.quantity,
+        status: donation.status,
+        user_id: user.id, // Ensure this is valid
+        location: donation.location,
+        expiry_date: donation.date,
+        food_type: donation.foodType,
+        priority: donation.priority
+      })
+
+    if (error) {
+      console.error("Error inserting donation:", error);
+      alert("Error inserting donation: "+ error.message);
+    } else {
+      getData(user);
     }
   };
-  
-
-  
-  const mapRef = useRef<mapboxgl.Map | null>(null);
-  const mapContainerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (mapContainerRef.current) { // Check if the ref is not null
-      mapboxgl.accessToken = 'pk.eyJ1Ijoidmd1ZGUyMDA5IiwiYSI6ImNtNzZvMXp6YjA4djIybHExenBvZXhxMGcifQ.MFH6I1WXFzVEHU_Oms3iFA';
-      mapRef.current = new mapboxgl.Map({
-        container: mapContainerRef.current, // Use the ref here
-        center: center,
-        zoom: 18, // Optional: Adjust the zoom level
-        style: 'mapbox://styles/mapbox/streets-v11' // Optional: Choose your preferred style
-      });
-    }
-  
-    return () => {
-      if (mapRef.current) {
-        mapRef.current.remove();
-      }
-    }
-  }, []);
 
   return (
     <SidebarProvider>
-      <Toaster position="top-right" expand={true} richColors/>
       <div className="flex w-full h-screen overflow-scroll bg-gradient-to-br from-emerald-50 to-green-100">
         <div className="w-fit">
           <AppSidebar />
@@ -224,16 +198,18 @@ export default function Location() {
         <div className="space-y-8 w-full h-full px-16 mt-10">
           <div className="flex justify-between items-start">
             <div>
-              <h1 className="text-3xl font-bold tracking-tight">Locations</h1>
+              <h1 className="text-3xl font-bold tracking-tight">Inventory</h1>
               <p className="text-muted-foreground mt-2">
                 AI-powered order management and predictions
               </p>
             </div>
-            
+            <Button onClick={()=>setShowForm(true)} className="bg-primary hover:bg-primary/90">
+              <Plus className="mr-2 h-4 w-4" /> New Order
+            </Button>
           </div>
 
           {/* Key Metrics */}
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-4">
             <Card className="p-6">
               <div className="flex items-center gap-4">
                 <ShoppingCart className="h-8 w-8 text-green-500" />
@@ -246,9 +222,20 @@ export default function Location() {
                 </div>
               </div>
             </Card>
-
             <Card className="p-6">
-              <div className="flex items-center gap-4 relative">
+              <div className="flex items-center gap-4">
+                <Package className="h-8 w-8 text-yellow-400" />
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Pending Deliveries</p>
+                  <h3 className="text-2xl font-bold">{pendingDeliveries}</h3>
+                  <p className="text-xs text-red-500 flex items-center mt-1">
+                    <ArrowDownRight className="h-3 w-3 mr-1" /> -3%
+                  </p>
+                </div>
+              </div>
+            </Card>
+            <Card className="p-6">
+              <div className="flex items-center gap-4">
                 <Package className="h-8 w-8 text-primary" />
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Total Orders</p>
@@ -257,11 +244,11 @@ export default function Location() {
                     <ArrowUpRight className="h-3 w-3 mr-1" /> +8%
                   </p>
                 </div>
-                </div>
+              </div>
             </Card>
             <Card className="p-6">
               <div className="flex items-center gap-4">
-                <AlertTriangle className="h-8 w-8 text-yellow-500" />
+                <AlertTriangle className="h-8 w-8 text-red-500" />
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">In Risk of Expiring</p>
                   <h3 className="text-2xl font-bold">{inRiskOfExpiring} oz</h3>
@@ -273,17 +260,74 @@ export default function Location() {
             </Card>
           </div>
 
-          
+          {/* Charts Section */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {/* Order Trends */}
+            <Card className="col-span-2">
+              <div className="p-6">
+                <h3 className="font-semibold mb-4 flex items-center">
+                  <ChartLine className="h-5 w-5 mr-2 text-primary" />
+                  Inventory Volume Trends
+                </h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={monthlyData}>
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Area 
+                        type="monotone" 
+                        dataKey="oz" 
+                        stroke="#22c55e" 
+                        fill="#22c55e20" 
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </Card>
+
+            {/* Order Types Distribution */}
+            <Card>
+              <div className="p-6">
+                <h3 className="font-semibold mb-4 flex items-center">
+                  <ChartBar className="h-5 w-5 mr-2 text-primary" />
+                  Inventory Types
+                </h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={orderTypesArray}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={80}
+                        paddingAngle={5}
+                        dataKey="value"
+                      >
+                        {orderTypesArray.map(( _,index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </Card>
 
 
-
+            {/* ML Predictions vs Actual */}
+            
+          </div>
 
           {/* Orders List */}
-          <Card className="pb-5">
+          <Card>
             <div className="p-6 space-y-4 relative">
               <h2 className="text-xl font-semibold flex items-center">
                 <Package className="h-5 w-5 mr-2 text-primary" />
-                Available Food
+                Inventory
               </h2>
               
               <div className="divide-y divide-border">
@@ -297,9 +341,8 @@ export default function Location() {
                       }`}
                     >
                       <div className="space-y-1">
-                        <h3 className="font-medium">{donation.name} <span className="text-neutral-500 text-sm">by {donation.restaurant_title}</span> </h3>
+                        <h3 className="font-medium">{donation.name}</h3>
                         <p className="text-sm text-muted-foreground">{donation.food_type}</p>
-                        
                       </div>
                       <div className="flex items-center gap-6">
                         <div className="text-right">
@@ -339,10 +382,6 @@ export default function Location() {
                             {status ==='expired'?'expired':donation.status}
                           </span>
                         </div>
-                        <div>
-                          <Button onClick={()=>{orderItems(donation.id)}} className={` ${status === 'expired'?'cursor-not-allowed':''}`} disabled={status === 'expired'?true:false}>Order</Button>
-                        </div>
-                        <Button onClick={()=>{getLatLong(donation.location,donation)}}><MapPinned /></Button> 
                       </div>
                     </div>
                   );
@@ -361,22 +400,12 @@ export default function Location() {
           </Card>
         </div>
       </div> 
-      
-  <div className={` inset-0 flex items-center justify-center z-50 bg-black bg-opacity-50 ${showForm?'fixed':'hidden'}`}>
-  <button
-        onClick={() => setShowForm(false)}
-        className="absolute top-2 right-2 text-gray-600 hover:text-gray-800 font-bold text-xl"
-      >
-        &times;
-      </button>
-    <div className=" w-3/4 h-3/4 bg-white rounded-lg shadow-lg overflow-hidden">
-      
-      <div ref={mapContainerRef} className="map-container"  style={{ width: '75vw', height: '75vh' }}></div>
-    </div>
-  </div>
-
-
-
+      {showForm && (
+        <DonationForm
+          onClose={() => setShowForm(false)}
+          onSubmit={handleNewDonation}
+        />
+      )}
     </SidebarProvider>
   );
 }
